@@ -1,0 +1,166 @@
+{
+  "name": "sap-llm-extension",
+  "displayName": "SAP LLM Extension",
+  "description": "SAP LLM Analyzer with Keycloak + DevX Agent",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:sap-llm.analyzeCode",
+    "onCommand:sap-llm.findBugs",
+    "onCommand:sap-llm.suggestRefactor",
+    "onCommand:sap-llm.reviewPerformance",
+    "onCommand:sap-llm.reviewSecurity",
+    "onCommand:sap-llm.generateTests",
+    "onCommand:sap-llm.attachExplorerFile",
+    "onCommand:sap-llm.openChatPanel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sap-llm.analyzeCode",
+        "title": "SAP LLM: 코드 분석"
+      },
+      {
+        "command": "sap-llm.findBugs",
+        "title": "SAP LLM: 버그 찾기"
+      },
+      {
+        "command": "sap-llm.suggestRefactor",
+        "title": "SAP LLM: 리팩토링 제안"
+      },
+      {
+        "command": "sap-llm.reviewPerformance",
+        "title": "SAP LLM: 성능 분석"
+      },
+      {
+        "command": "sap-llm.reviewSecurity",
+        "title": "SAP LLM: 보안 점검"
+      },
+      {
+        "command": "sap-llm.generateTests",
+        "title": "SAP LLM: 테스트 케이스 생성"
+      },
+      {
+        "command": "sap-llm.attachExplorerFile",
+        "title": "SAP LLM: 채팅에 첨부"
+      },
+      {
+        "command": "sap-llm.openChatPanel",
+        "title": "SAP LLM: 채팅 패널 열기"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Company AI",
+      "properties": {
+        "companyAi.apiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "DevX Agent Chat API Base URL"
+        },
+        "companyAi.clientId": {
+          "type": "string",
+          "default": "",
+          "description": "Keycloak Client ID"
+        },
+        "companyAi.clientSecret": {
+          "type": "string",
+          "default": "",
+          "description": "Keycloak Client Secret"
+        },
+        "companyAi.agentId": {
+          "type": "string",
+          "default": "8e718a37-d4ee-4668-974a-21805f986e9c",
+          "description": "DevX Agent ID"
+        },
+        "companyAi.agentCode": {
+          "type": "string",
+          "default": "custom_b791cecad28f47d8a1153e4ae312272c",
+          "description": "DevX Agent Code"
+        },
+        "companyAi.userId": {
+          "type": "string",
+          "default": "sap-analyzer",
+          "description": "Agent User ID"
+        },
+        "companyAi.longResponseThresholdMs": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "description": "Milliseconds before the chat UI marks a response as taking longer than usual"
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sap-llm.analyzeCode",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        },
+        {
+          "command": "sap-llm.findBugs",
+          "when": "editorHasSelection",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sap-llm.suggestRefactor",
+          "when": "editorHasSelection",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sap-llm.reviewPerformance",
+          "when": "editorHasSelection",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sap-llm.reviewSecurity",
+          "when": "editorHasSelection",
+          "group": "navigation@4"
+        },
+        {
+          "command": "sap-llm.generateTests",
+          "when": "editorHasSelection",
+          "group": "navigation@5"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "sap-llm.attachExplorerFile",
+          "when": "explorerResourceIsFolder == false",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "npm run build:webview && tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build:webview": "cd webview-ui && npm run build"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.13.2",
+    "@types/vscode": "^1.125.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "eslint": "^10.5.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "axios": "^1.18.1",
+    "buffer": "^6.0.3"
+  }
+}
