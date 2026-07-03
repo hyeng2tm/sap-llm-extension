@@ -206,6 +206,7 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
     private static readonly HISTORY_DIR = '.sap-llm/history';
     private static readonly MAX_HISTORY_SNAPSHOTS = 100;
     private static readonly DEFAULT_HISTORY_RETENTION_DAYS = 14;
+    private static readonly TOKEN_REFRESH_SKEW_MS = 60 * 1000;
     private static readonly TEXT_UPLOAD_EXTENSIONS = new Set([
         'abap',
         'txt',
@@ -223,6 +224,9 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
     ]);
 
     private _authToken: string | null = null;
+    private _authTokenExpiresAtMs: number | null = null;
+    private _authTokenRefreshInFlight: Promise<string> | null = null;
+    private _authTokenConfigKey: string | null = null;
     private conversationId: string | null = null;
     private currentFileId: string | null = null;
     private historySessionId: string | null = null;
@@ -818,12 +822,55 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
         };
     }
 
+    private getTokenConfigKey(): string {
+        const { apiBaseUrl, clientId, clientSecret } = this.getAgentConfig();
+        return `${apiBaseUrl}::${clientId}::${clientSecret}`;
+    }
+
+    private clearAuthToken(): void {
+        this._authToken = null;
+        this._authTokenExpiresAtMs = null;
+    }
+
+    private hasValidAuthToken(): boolean {
+        if (!this._authToken || !this._authTokenExpiresAtMs) {
+            return false;
+        }
+
+        return Date.now() < (this._authTokenExpiresAtMs - CompanyAgentProvider.TOKEN_REFRESH_SKEW_MS);
+    }
+
+    private async authorizedFetch(
+        requestFactory: (token: string) => Promise<Response>
+    ): Promise<Response> {
+        let token = await this.getAuthToken();
+        let response = await requestFactory(token);
+
+        if (response.status === 401) {
+            this.clearAuthToken();
+            token = await this.getAuthToken();
+            response = await requestFactory(token);
+        }
+
+        return response;
+    }
+
     /**
      * 🔑 [API 1] Bearer Token 발급 API 호출
      */
     private async getAuthToken(): Promise<string> {
-        if (this._authToken) {
-            return this._authToken;
+        const nextConfigKey = this.getTokenConfigKey();
+        if (this._authTokenConfigKey !== nextConfigKey) {
+            this.clearAuthToken();
+            this._authTokenConfigKey = nextConfigKey;
+        }
+
+        if (this.hasValidAuthToken()) {
+            return this._authToken!;
+        }
+
+        if (this._authTokenRefreshInFlight) {
+            return this._authTokenRefreshInFlight;
         }
 
         const { apiBaseUrl, clientId, clientSecret } = this.getAgentConfig();
@@ -833,7 +880,7 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
             throw new Error('Missing credentials');
         }
 
-        try {
+        this._authTokenRefreshInFlight = (async () => {
             const body = new URLSearchParams({
                 grant_type: 'client_credentials',
                 client_id: clientId,
@@ -847,13 +894,28 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
             });
 
             this._authToken = response.data.access_token;
+            const expiresInSecRaw = response.data?.expires_in;
+            const expiresInSec = typeof expiresInSecRaw === 'number'
+                ? expiresInSecRaw
+                : Number(expiresInSecRaw);
+            const effectiveExpiresInSec = Number.isFinite(expiresInSec) && expiresInSec > 0
+                ? expiresInSec
+                : 3600;
+            this._authTokenExpiresAtMs = Date.now() + (effectiveExpiresInSec * 1000);
             return this._authToken!;
+        })();
+
+        try {
+            return await this._authTokenRefreshInFlight;
         } catch (error) {
+            this.clearAuthToken();
             const detail = axios.isAxiosError(error)
                 ? `${error.response?.status ?? 'N/A'} ${JSON.stringify(error.response?.data ?? {})}`
                 : String(error);
             vscode.window.showErrorMessage(`회사 AI 인증 토큰 발급 실패: ${detail}`);
             throw error;
+        } finally {
+            this._authTokenRefreshInFlight = null;
         }
     }
 
@@ -861,7 +923,6 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
      * 📁 [API 3] 파일 업로드 API 호출
      */
     private async uploadMaterialFile(
-        token: string,
         fileName: string,
         content: string | Uint8Array,
         mimeType = 'text/plain'
@@ -877,7 +938,7 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
             const formData = new FormData();
             formData.append('file', uploadFile);
 
-            const response = await fetch(`${apiBaseUrl}/v1/agent/files/upload`, {
+            const requestUpload = async (token: string) => fetch(`${apiBaseUrl}/v1/agent/files/upload`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`
@@ -885,7 +946,13 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
                 body: formData
             });
 
+            const response = await this.authorizedFetch(requestUpload);
+
             if (!response.ok) {
+                if (response.status === 401) {
+                    this.clearAuthToken();
+                    throw new Error('API 인증 오류 (401): 토큰이 만료되었습니다. 잠시 후 다시 시도해주세요.');
+                }
                 const detail = await this.readErrorDetail(response);
                 throw new Error(`파일 업로드 실패 (${response.status}): ${detail}`);
             }
@@ -1021,7 +1088,7 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async uploadAttachments(token: string, attachments: WebviewAttachment[]): Promise<string[]> {
+    private async uploadAttachments(attachments: WebviewAttachment[]): Promise<string[]> {
         const materialIds: string[] = [];
 
         for (const attachment of attachments) {
@@ -1038,7 +1105,6 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
             const uploadMimeType = this.getUploadMimeType(attachment.name, attachment.mimeType);
 
             const materialId = await this.uploadMaterialFile(
-                token,
                 uploadFileName,
                 bytes,
                 uploadMimeType
@@ -1108,8 +1174,6 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
         this.activeResponseId = responseId;
 
         try {
-            // 1단계: 사내 인증 토큰 확보
-            const token = await this.getAuthToken();
             const { apiBaseUrl, agentId, agentCode, agentUserId } = this.getAgentConfig();
 
             // 2단계: 첨부 파일만 업로드하고, 선택 코드는 프롬프트에 직접 포함
@@ -1123,13 +1187,13 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
                 vscode.window.showWarningMessage('선택한 코드가 너무 길어 앞부분만 전송합니다.');
             }
 
-            materialIds.push(...await this.uploadAttachments(token, attachments));
+            materialIds.push(...await this.uploadAttachments(attachments));
 
             const finalPrompt = inlineContext
                 ? `${prompt}\n\n[선택한 코드]\n${inlineContext.content}`
                 : prompt;
 
-            const response = await fetch(`${apiBaseUrl}/v1/agent/chat`, {
+            const requestChat = async (token: string) => fetch(`${apiBaseUrl}/v1/agent/chat`, {
                 method: 'POST',
                 signal: abortController.signal,
                 headers: {
@@ -1153,12 +1217,16 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
                 })
             });
 
+            const response = await this.authorizedFetch(requestChat);
+
             if (!response.ok) {
-                if (response.status === 401) {
-                    this._authToken = null;
-                }
                 if (response.status === 413) {
                     throw new Error('질문 또는 첨부된 컨텍스트 크기가 너무 커서 서버가 요청을 거절했습니다.');
+                }
+
+                if (response.status === 401) {
+                    this.clearAuthToken();
+                    throw new Error('API 인증 오류 (401): 토큰이 만료되었습니다. 잠시 후 다시 시도해주세요.');
                 }
 
                 const detail = await this.readErrorDetail(response);
@@ -1179,9 +1247,12 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
             }
 
             console.error('Error in Extension Host:', error);
-            const message = error instanceof Error
+            const rawMessage = error instanceof Error
                 ? error.message
                 : '회사 AI Agent 통신 중 에러가 발생했습니다.';
+            const message = /\b401\b|unauthorized|토큰\s*만료/i.test(rawMessage)
+                ? 'API 인증 오류 (401): 토큰이 만료되었습니다. 잠시 후 다시 시도해주세요.'
+                : rawMessage;
             webview.postMessage({ type: 'stream-error', id: responseId, message, reason: 'error' });
             this.finishActiveRequest();
             vscode.window.showErrorMessage(message);
