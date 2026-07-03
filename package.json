@@ -54,7 +54,7 @@
       "properties": {
         "companyAi.apiBaseUrl": {
           "type": "string",
-          "default": "",
+          "default": "https://devx-gw.shinsegae-inc.com/api",
           "description": "DevX Agent Chat API Base URL"
         },
         "companyAi.clientId": {
@@ -69,17 +69,17 @@
         },
         "companyAi.agentId": {
           "type": "string",
-          "default": "8e718a37-d4ee-4668-974a-21805f986e9c",
+          "default": "",
           "description": "DevX Agent ID"
         },
         "companyAi.agentCode": {
           "type": "string",
-          "default": "custom_b791cecad28f47d8a1153e4ae312272c",
+          "default": "",
           "description": "DevX Agent Code"
         },
         "companyAi.userId": {
           "type": "string",
-          "default": "sap-analyzer",
+          "default": "",
           "description": "Agent User ID"
         },
         "companyAi.longResponseThresholdMs": {
