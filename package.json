@@ -178,7 +178,8 @@
     "compile": "npm run build:webview && npm run typecheck && npm run build:extension",
     "typecheck": "tsc --noEmit -p ./",
     "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node20 --format=cjs --outfile=out/extension.js --external:vscode",
-    "watch": "tsc -watch -p ./",
+    "watch": "npm run build:webview && npm run watch:extension",
+    "watch:extension": "esbuild src/extension.ts --bundle --platform=node --target=node20 --format=cjs --outfile=out/extension.js --external:vscode --watch",
     "build:webview": "cd webview-ui && npm run build"
   },
   "devDependencies": {
