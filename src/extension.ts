@@ -27,7 +27,7 @@ type PersistedChatMessage = {
     id: string;
     role: 'user' | 'assistant' | 'system';
     content: string;
-    kind?: 'error' | 'canceled';
+    kind?: 'error' | 'canceled' | 'info';
     statusText?: string;
 };
 
@@ -124,7 +124,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(
         vscode.commands.registerCommand('sap-llm.openChatPanel', async () => {
-            await provider.openChatPanel();
+            await provider.startNewChat();
         })
     );
     context.subscriptions.push(
@@ -276,7 +276,7 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
                 const role: PersistedChatMessage['role'] = entry.role === 'user' || entry.role === 'assistant' || entry.role === 'system'
                     ? entry.role
                     : 'system';
-                const kind: PersistedChatMessage['kind'] = entry.kind === 'error' || entry.kind === 'canceled'
+                const kind: PersistedChatMessage['kind'] = entry.kind === 'error' || entry.kind === 'canceled' || entry.kind === 'info'
                     ? entry.kind
                     : undefined;
                 return {
@@ -592,13 +592,15 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
     }
 
     private async loadChatHistoryFromWorkspace(): Promise<PersistedChatMessage[]> {
-        const latestFile = await this.getLatestHistoryFileUri();
-        if (!latestFile) {
+        const historyDir = this.getHistoryDirectoryUri();
+        if (!historyDir) {
             return [];
         }
 
+        const targetFile = await this.createSnapshotHistoryFileUri(historyDir);
+
         try {
-            const raw = await vscode.workspace.fs.readFile(latestFile);
+            const raw = await vscode.workspace.fs.readFile(targetFile);
             const parsed = JSON.parse(Buffer.from(raw).toString('utf8')) as unknown;
             if (Array.isArray(parsed)) {
                 return this.sanitizeChatHistoryMessages(parsed);
@@ -1354,6 +1356,34 @@ class CompanyAgentProvider implements vscode.WebviewViewProvider {
                 return;
             }
 
+        });
+    }
+
+    public async startNewChat(): Promise<void> {
+        const webview = await this.openChatPanel();
+        await this.waitForWebviewReady();
+
+        if (this.activeRequestAbortController && this.activeResponseId) {
+            const canceledResponseId = this.activeResponseId;
+            this.activeRequestAbortController.abort();
+            this.finishActiveRequest();
+            webview.postMessage({
+                type: 'stream-error',
+                id: canceledResponseId,
+                message: '응답 생성을 취소했습니다.',
+                reason: 'canceled'
+            });
+        }
+
+        this.conversationId = null;
+        this.currentFileId = null;
+        this.historySessionId = null;
+        this.ensureHistorySessionId();
+
+        webview.postMessage({
+            type: 'new-chat',
+            kind: 'info',
+            notice: '새 대화를 시작했습니다. 이전 대화 내용은 초기화되었습니다.'
         });
     }
 

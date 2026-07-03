@@ -1,0 +1,14 @@
+{
+  "date": "2026-07-03",
+  "snapshotAt": "2026-07-03T06:50:04.767Z",
+  "updatedAt": "2026-07-03T06:50:04.767Z",
+  "historySessionId": "session-mr4kpip7-in35xa",
+  "messageCount": 1,
+  "messages": [
+    {
+      "id": "history-loaded-1783061404498",
+      "role": "system",
+      "content": "히스토리를 불러왔습니다: chat-session-mr4kpip7-in35xa.json"
+    }
+  ]
+}

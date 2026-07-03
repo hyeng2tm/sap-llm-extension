@@ -55,7 +55,8 @@
       },
       {
         "command": "sap-llm.openChatPanel",
-        "title": "SAP LLM: 채팅 패널 열기"
+        "title": "새 대화 시작",
+        "icon": "$(comment-discussion)"
       }
     ],
     "viewsContainers": {
@@ -132,6 +133,20 @@
       }
     },
     "menus": {
+      "editor/title": [
+        {
+          "command": "sap-llm.openChatPanel",
+          "group": "navigation",
+          "when": "true"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "sap-llm.openChatPanel",
+          "group": "navigation",
+          "when": "view == sapLlmChatView"
+        }
+      ],
       "editor/context": [
         {
           "command": "sap-llm.analyzeCode",

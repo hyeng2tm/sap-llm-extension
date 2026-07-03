@@ -7,7 +7,7 @@ interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  kind?: "error" | "canceled";
+  kind?: "error" | "canceled" | "info";
   statusText?: string;
 }
 
@@ -36,7 +36,7 @@ function sanitizeHistoryMessages(messages: unknown): Message[] {
       const role = entry.role === "user" || entry.role === "assistant" || entry.role === "system"
         ? entry.role
         : "system";
-      const kind = entry.kind === "error" || entry.kind === "canceled"
+      const kind = entry.kind === "error" || entry.kind === "canceled" || entry.kind === "info"
         ? entry.kind
         : undefined;
       return {
@@ -380,6 +380,37 @@ export default function App() {
           setIsTakingLong(false);
           setActiveAssistantId(null);
           historyReadyRef.current = true;
+          break;
+
+        case "new-chat":
+          setMessages([
+            {
+              id: `new-chat-${Date.now()}`,
+              role: "system",
+              kind: message.kind === "error" || message.kind === "canceled" || message.kind === "info"
+                ? message.kind
+                : "info",
+              content: typeof message.notice === "string" && message.notice.trim()
+                ? message.notice
+                : "새 대화를 시작했습니다.",
+            }
+          ]);
+          setInput("");
+          setInputKey((prev) => prev + 1);
+          setAttachments([]);
+          setIsSending(false);
+          setIsTakingLong(false);
+          setActiveAssistantId(null);
+          historyReadyRef.current = true;
+          if (inputRef.current) {
+            inputRef.current.value = "";
+          }
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+          window.setTimeout(() => {
+            inputRef.current?.focus?.();
+          }, 0);
           break;
 
         case "history-loaded": {
@@ -798,6 +829,10 @@ export default function App() {
           background: linear-gradient(180deg, color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 72%, var(--sap-llm-surface) 28%), color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 56%, var(--sap-llm-surface-strong) 44%));
         }
 
+        .sap-llm-message-system-info {
+          background: linear-gradient(180deg, color-mix(in srgb, var(--vscode-editorInfo-background) 36%, var(--sap-llm-surface) 64%), color-mix(in srgb, var(--vscode-editorInfo-background) 22%, var(--sap-llm-surface-strong) 78%));
+        }
+
         .sap-llm-composer {
           position: sticky;
           bottom: 0;
@@ -934,7 +969,9 @@ export default function App() {
           const isActiveAssistant = msg.role === "assistant" && msg.id === activeAssistantId;
           const showTypingIndicator = isActiveAssistant && isSending;
           const isCanceled = msg.kind === "canceled";
-          const isSystemError = msg.role === "system";
+          const isSystem = msg.role === "system";
+          const isSystemError = isSystem && msg.kind === "error";
+          const isSystemInfo = isSystem && !isSystemError;
           const showStatusTag = msg.role === "assistant" && !!msg.statusText;
           const isUser = msg.role === "user";
           const isAssistant = msg.role === "assistant";
@@ -943,11 +980,15 @@ export default function App() {
             ? "var(--vscode-button-background)"
             : isSystemError
               ? "var(--vscode-inputValidation-errorBackground)"
+              : isSystemInfo
+                ? "color-mix(in srgb, var(--vscode-editorInfo-background) 45%, var(--vscode-editorWidget-background) 55%)"
               : "var(--vscode-editorWidget-background)";
           const bubbleBorderColor = isUser
             ? "var(--vscode-button-border)"
             : isSystemError
               ? "var(--vscode-inputValidation-errorBorder)"
+              : isSystemInfo
+                ? "color-mix(in srgb, var(--vscode-editorInfo-border, var(--vscode-focusBorder)) 65%, var(--vscode-widget-border) 35%)"
               : "var(--vscode-widget-border)";
           const bubbleTextColor = isUser
             ? "var(--vscode-button-foreground)"
@@ -955,8 +996,10 @@ export default function App() {
               ? "var(--vscode-testing-iconQueued)"
               : isSystemError
                 ? "var(--vscode-inputValidation-errorForeground)"
+                : isSystemInfo
+                  ? "var(--vscode-foreground)"
                 : "var(--vscode-foreground)";
-          const bubbleWidth = isSystemError ? "min(100%, 560px)" : "min(88%, 560px)";
+          const bubbleWidth = isSystem ? "min(100%, 560px)" : "min(88%, 560px)";
 
           return (
             <div
@@ -987,11 +1030,13 @@ export default function App() {
                             ? "var(--vscode-testing-iconQueued)"
                             : isSystemError
                               ? "var(--vscode-errorForeground)"
+                                : isSystemInfo
+                                  ? "var(--vscode-descriptionForeground)"
                               : "var(--vscode-textPreformat-foreground)",
                       marginBottom: "2px",
                       fontSize: labelFontSize,
                       letterSpacing: "0.01em",
-                      textAlign: isUser ? "right" : isSystemError ? "center" : "left"
+                        textAlign: isUser ? "right" : isSystem ? "center" : "left"
                     }}
                   >
                     {isUser ? "User" : isCanceled ? "Canceled" : msg.role === "system" ? "System" : "Assistant"}
@@ -1004,6 +1049,8 @@ export default function App() {
                         ? "sap-llm-message-card sap-llm-message-user"
                         : isSystemError
                           ? "sap-llm-message-card sap-llm-message-system"
+                            : isSystemInfo
+                              ? "sap-llm-message-card sap-llm-message-system-info"
                           : "sap-llm-message-card sap-llm-message-assistant"
                     }
                   style={{
@@ -1013,7 +1060,7 @@ export default function App() {
                     color: bubbleTextColor,
                     backgroundColor: bubbleBackgroundColor,
                     border: `1px solid ${bubbleBorderColor}`,
-                      borderRadius: isUser ? "18px 18px 6px 18px" : isSystemError ? "14px" : "18px 18px 18px 6px",
+                      borderRadius: isUser ? "18px 18px 6px 18px" : isSystem ? "14px" : "18px 18px 18px 6px",
                       padding: "12px 14px",
                     display: "flex",
                     flexDirection: "column",
