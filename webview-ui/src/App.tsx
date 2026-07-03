@@ -633,20 +633,45 @@ export default function App() {
 
   return (
     <div
+      className="sap-llm-shell"
       style={{
         display: "flex",
         flexDirection: "column",
         height: "100vh",
-        padding: "8px",
+        padding: "10px",
         boxSizing: "border-box",
         fontFamily: "var(--vscode-font-family)",
         fontSize: "var(--vscode-font-size)",
-        fontWeight: "var(--vscode-font-weight)"
+        fontWeight: "var(--vscode-font-weight)",
+        background:
+          "radial-gradient(circle at top left, color-mix(in srgb, #0ea5e9 14%, transparent), transparent 28%), radial-gradient(circle at top right, color-mix(in srgb, #22d3ee 10%, transparent), transparent 22%), linear-gradient(180deg, color-mix(in srgb, var(--vscode-editor-background) 96%, #000 4%), var(--vscode-editor-background))",
+        color: "var(--vscode-foreground)"
       }}
     >
       <style>{`
         :root {
           color-scheme: dark;
+          --sap-llm-surface: color-mix(in srgb, var(--vscode-editorWidget-background) 92%, transparent);
+          --sap-llm-surface-strong: color-mix(in srgb, var(--vscode-editorWidget-background) 84%, transparent);
+          --sap-llm-border: color-mix(in srgb, var(--vscode-widget-border) 78%, #1f2937 22%);
+          --sap-llm-accent: color-mix(in srgb, #38bdf8 70%, var(--vscode-button-background) 30%);
+          --sap-llm-accent-soft: color-mix(in srgb, #38bdf8 20%, transparent);
+        }
+
+        .sap-llm-shell {
+          position: relative;
+          overflow: hidden;
+        }
+
+        .sap-llm-shell::before {
+          content: "";
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          background:
+            linear-gradient(90deg, transparent 0 49.8%, color-mix(in srgb, #38bdf8 10%, transparent) 50%, transparent 50.2% 100%),
+            linear-gradient(180deg, color-mix(in srgb, #ffffff 2%, transparent), transparent 28%);
+          opacity: 0.45;
         }
 
         .sap-llm-header {
@@ -654,12 +679,15 @@ export default function App() {
           align-items: center;
           justify-content: space-between;
           gap: 12px;
-          padding: 10px 12px;
-          margin-bottom: 8px;
-          border: 1px solid var(--vscode-widget-border);
-          border-radius: 14px;
-          background: linear-gradient(135deg, color-mix(in srgb, var(--vscode-editorWidget-background) 90%, transparent), color-mix(in srgb, var(--vscode-sideBar-background) 84%, transparent));
-          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+          padding: 12px 14px;
+          margin-bottom: 10px;
+          border: 1px solid var(--sap-llm-border);
+          border-radius: 18px;
+          background: linear-gradient(180deg, var(--sap-llm-surface), var(--sap-llm-surface-strong));
+          box-shadow: 0 18px 42px rgba(0, 0, 0, 0.18);
+          backdrop-filter: blur(12px);
+          position: relative;
+          z-index: 1;
         }
 
         .sap-llm-header-title {
@@ -668,18 +696,125 @@ export default function App() {
           gap: 2px;
         }
 
-        .sap-llm-header-badge {
-          padding: 3px 8px;
+        .sap-llm-title-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .sap-llm-title-mark {
+          width: 12px;
+          height: 12px;
           border-radius: 999px;
-          background: var(--vscode-badge-background);
+          background: linear-gradient(180deg, #7dd3fc, #0ea5e9);
+          box-shadow: 0 0 0 6px color-mix(in srgb, #38bdf8 14%, transparent);
+          flex: 0 0 auto;
+        }
+
+        .sap-llm-header-badge {
+          padding: 5px 10px;
+          border-radius: 999px;
+          background: color-mix(in srgb, var(--sap-llm-accent-soft) 70%, var(--vscode-badge-background));
           color: var(--vscode-badge-foreground);
-          font-size: calc(var(--vscode-font-size) - 3px);
-          border: 1px solid var(--vscode-panel-border);
+          font-size: calc(var(--vscode-font-size) - 4px);
+          border: 1px solid color-mix(in srgb, var(--sap-llm-accent) 50%, var(--vscode-panel-border));
           white-space: nowrap;
         }
 
+        .sap-llm-message-pane {
+          flex: 1;
+          overflow-y: auto;
+          margin-bottom: 10px;
+          padding: 4px 2px 8px;
+          position: relative;
+          z-index: 1;
+        }
+
+        .sap-llm-message-pane::-webkit-scrollbar {
+          width: 10px;
+        }
+
+        .sap-llm-message-pane::-webkit-scrollbar-thumb {
+          background: color-mix(in srgb, var(--sap-llm-border) 70%, transparent);
+          border-radius: 999px;
+          border: 3px solid transparent;
+          background-clip: content-box;
+        }
+
+        .sap-llm-message-pane::-webkit-scrollbar-track {
+          background: transparent;
+        }
+
+        .sap-llm-empty-state {
+          position: relative;
+          overflow: hidden;
+        }
+
+        .sap-llm-empty-state::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          background: radial-gradient(circle at top right, color-mix(in srgb, #38bdf8 12%, transparent), transparent 30%);
+          pointer-events: none;
+        }
+
+        .sap-llm-message-row {
+          display: flex;
+          margin-bottom: 14px;
+        }
+
+        .sap-llm-message-meta {
+          letter-spacing: 0.02em;
+          text-transform: uppercase;
+        }
+
+        .sap-llm-message-card {
+          position: relative;
+          overflow: hidden;
+          border: 1px solid var(--sap-llm-border);
+          box-shadow: 0 14px 28px rgba(0, 0, 0, 0.16);
+          backdrop-filter: blur(12px);
+        }
+
+        .sap-llm-message-card::before {
+          content: "";
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 24%);
+          opacity: 0.55;
+        }
+
+        .sap-llm-message-user {
+          background: linear-gradient(180deg, color-mix(in srgb, var(--sap-llm-accent) 26%, var(--vscode-button-background)), color-mix(in srgb, var(--sap-llm-accent) 14%, var(--vscode-button-background)));
+          border-color: color-mix(in srgb, var(--sap-llm-accent) 36%, var(--vscode-button-border));
+        }
+
+        .sap-llm-message-assistant {
+          background: linear-gradient(180deg, color-mix(in srgb, var(--sap-llm-surface) 100%, transparent), color-mix(in srgb, var(--sap-llm-surface-strong) 100%, transparent));
+        }
+
+        .sap-llm-message-system {
+          background: linear-gradient(180deg, color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 72%, var(--sap-llm-surface) 28%), color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 56%, var(--sap-llm-surface-strong) 44%));
+        }
+
+        .sap-llm-composer {
+          position: sticky;
+          bottom: 0;
+          z-index: 2;
+          padding: 10px;
+          margin-top: auto;
+          border: 1px solid var(--sap-llm-border);
+          border-radius: 18px;
+          background: linear-gradient(180deg, color-mix(in srgb, var(--sap-llm-surface) 96%, transparent), color-mix(in srgb, var(--sap-llm-surface-strong) 96%, transparent));
+          box-shadow: 0 20px 38px rgba(0, 0, 0, 0.18);
+          backdrop-filter: blur(14px);
+        }
+
         .sap-llm-attachment-chip:hover {
-          border-color: var(--vscode-focusBorder);
+          border-color: var(--sap-llm-accent);
+          transform: translateY(-1px);
+          transition: transform 120ms ease, border-color 120ms ease;
         }
 
         @keyframes typing-pulse {
@@ -700,15 +835,29 @@ export default function App() {
           color: var(--vscode-descriptionForeground);
           font-style: italic;
         }
+
+        vscode-text-area::part(control) {
+          background: color-mix(in srgb, var(--sap-llm-surface-strong) 96%, transparent);
+          border-color: var(--sap-llm-border);
+          border-radius: 16px;
+        }
+
+        vscode-button[appearance="secondary"] {
+          --vscode-button-secondaryBackground: color-mix(in srgb, var(--sap-llm-surface-strong) 94%, transparent);
+          --vscode-button-secondaryForeground: var(--vscode-foreground);
+        }
       `}</style>
 
       <div className="sap-llm-header">
         <div className="sap-llm-header-title">
-          <div style={{ fontSize: "calc(var(--vscode-font-size) + 2px)", fontWeight: 700 }}>
-            SAP LLM Chat
+          <div className="sap-llm-title-row">
+            <span className="sap-llm-title-mark" aria-hidden="true" />
+            <div style={{ fontSize: "calc(var(--vscode-font-size) + 2px)", fontWeight: 700 }}>
+              SAP LLM Chat
+            </div>
           </div>
           <div style={{ color: "var(--vscode-descriptionForeground)", fontSize: metaFontSize }}>
-            AI 응답 {assistantCount}건 | 코드 블록은 별도 스타일로 표시됩니다.
+            Copilot-inspired chat surface | AI 응답 {assistantCount}건
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -748,9 +897,10 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", marginBottom: "8px" }}>
+      <div className="sap-llm-message-pane">
         {messages.length === 0 && !isSending && (
           <div
+            className="sap-llm-empty-state"
             style={{
               minHeight: "100%",
               display: "flex",
@@ -762,12 +912,12 @@ export default function App() {
             <div
               style={{
                 width: "min(420px, 100%)",
-                padding: "20px",
-                borderRadius: "16px",
-                border: "1px solid var(--vscode-widget-border)",
-                background:
-                  "linear-gradient(160deg, color-mix(in srgb, var(--vscode-editorWidget-background) 92%, transparent), color-mix(in srgb, var(--vscode-sideBar-background) 88%, transparent))",
-                boxShadow: "0 10px 30px rgba(0, 0, 0, 0.12)"
+                padding: "22px",
+                borderRadius: "18px",
+                border: "1px solid var(--sap-llm-border)",
+                background: "linear-gradient(180deg, var(--sap-llm-surface), var(--sap-llm-surface-strong))",
+                boxShadow: "0 18px 38px rgba(0, 0, 0, 0.16)",
+                backdropFilter: "blur(12px)"
               }}
             >
               <div style={{ fontSize: "calc(var(--vscode-font-size) + 2px)", fontWeight: 700, marginBottom: "8px" }}>
@@ -811,8 +961,8 @@ export default function App() {
           return (
             <div
               key={msg.id}
+              className="sap-llm-message-row"
               style={{
-                marginBottom: "12px",
                 display: "flex",
                 justifyContent: rowJustifyContent
               }}
@@ -827,6 +977,7 @@ export default function App() {
                   }}
                 >
                   <div
+                    className="sap-llm-message-meta"
                     style={{
                       fontWeight: "bold",
                       color:
@@ -848,6 +999,13 @@ export default function App() {
                 </div>
 
                 <div
+                    className={
+                      isUser
+                        ? "sap-llm-message-card sap-llm-message-user"
+                        : isSystemError
+                          ? "sap-llm-message-card sap-llm-message-system"
+                          : "sap-llm-message-card sap-llm-message-assistant"
+                    }
                   style={{
                     fontFamily: "var(--vscode-editor-font-family)",
                     fontSize: messageFontSize,
@@ -855,12 +1013,12 @@ export default function App() {
                     color: bubbleTextColor,
                     backgroundColor: bubbleBackgroundColor,
                     border: `1px solid ${bubbleBorderColor}`,
-                    borderRadius: isUser ? "16px 16px 4px 16px" : isSystemError ? "12px" : "16px 16px 16px 4px",
-                    padding: "10px 12px",
+                      borderRadius: isUser ? "18px 18px 6px 18px" : isSystemError ? "14px" : "18px 18px 18px 6px",
+                      padding: "12px 14px",
                     display: "flex",
                     flexDirection: "column",
                     gap: "8px",
-                    boxShadow: "0 4px 14px rgba(0, 0, 0, 0.08)"
+                      boxShadow: "0 4px 14px rgba(0, 0, 0, 0.08)"
                   }}
                 >
                   {renderMessageContent(msg.content)}
@@ -999,7 +1157,7 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ display: "flex", gap: "6px", alignItems: "flex-end" }}>
+      <div className="sap-llm-composer" style={{ display: "flex", gap: "6px", alignItems: "flex-end" }}>
         <vscode-text-area
           key={inputKey}
           ref={inputRef}
@@ -1011,7 +1169,8 @@ export default function App() {
             flex: 1,
             fontFamily: "var(--vscode-font-family)",
             fontSize: inputFontSize,
-            fontWeight: "var(--vscode-font-weight)"
+            fontWeight: "var(--vscode-font-weight)",
+            borderRadius: "16px"
           }}
           rows={2}
           {...textAreaDisabledProps}
