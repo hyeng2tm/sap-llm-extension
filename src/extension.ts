@@ -126,8 +126,11 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
     context.subscriptions.push(
-        vscode.commands.registerCommand('sap-llm.attachExplorerFile', async (uri: vscode.Uri) => {
-            await provider.attachExplorerFile(uri);
+        vscode.commands.registerCommand('sap-llm.attachExplorerFile', async (uri: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+            const targets = Array.isArray(selectedUris) && selectedUris.length > 0
+                ? selectedUris
+                : (uri ? [uri] : []);
+            await provider.attachExplorerFile(targets);
         })
     );
 
@@ -942,37 +945,71 @@ class CompanyAgentProvider {
         return mimeType || this.getMimeTypeByFileName(fileName);
     }
 
-    public async attachExplorerFile(uri: vscode.Uri): Promise<void> {
-        if (!uri) {
+    public async attachExplorerFile(targets: readonly vscode.Uri[]): Promise<void> {
+        if (!targets.length) {
             vscode.window.showWarningMessage('첨부할 파일을 선택해주세요.');
             return;
         }
 
         try {
-            const stat = await vscode.workspace.fs.stat(uri);
-            if ((stat.type & vscode.FileType.Directory) !== 0) {
-                vscode.window.showInformationMessage('폴더는 첨부할 수 없습니다. 파일을 선택해주세요.');
-                return;
+            const uniqueTargets = Array.from(new Map(targets.map((uri) => [uri.toString(), uri])).values());
+            const attachments: WebviewAttachment[] = [];
+            let skippedFolders = 0;
+            let skippedTooLarge = 0;
+
+            for (const uri of uniqueTargets) {
+                const stat = await vscode.workspace.fs.stat(uri);
+                if ((stat.type & vscode.FileType.Directory) !== 0) {
+                    skippedFolders += 1;
+                    continue;
+                }
+
+                if (stat.size > CompanyAgentProvider.MAX_ATTACHMENT_BYTES) {
+                    skippedTooLarge += 1;
+                    continue;
+                }
+
+                const fileBytes = await vscode.workspace.fs.readFile(uri);
+                const fileName = uri.path.split('/').pop() || 'attachment';
+                attachments.push({
+                    name: fileName,
+                    mimeType: this.getMimeTypeByFileName(fileName),
+                    size: stat.size,
+                    contentBase64: Buffer.from(fileBytes).toString('base64')
+                });
             }
 
-            if (stat.size > CompanyAgentProvider.MAX_ATTACHMENT_BYTES) {
-                vscode.window.showErrorMessage('파일 크기가 커서 첨부할 수 없습니다. (최대 2MB)');
+            if (attachments.length === 0) {
+                if (skippedFolders > 0 || skippedTooLarge > 0) {
+                    const reasons = [
+                        skippedFolders > 0 ? `폴더 ${skippedFolders}개 제외` : null,
+                        skippedTooLarge > 0 ? `2MB 초과 파일 ${skippedTooLarge}개 제외` : null
+                    ].filter((value): value is string => value !== null);
+                    vscode.window.showWarningMessage(`첨부할 수 있는 파일이 없습니다. ${reasons.join(', ')}`);
+                    return;
+                }
+
+                vscode.window.showWarningMessage('첨부할 수 있는 파일이 없습니다.');
                 return;
             }
-
-            const fileBytes = await vscode.workspace.fs.readFile(uri);
-            const fileName = uri.path.split('/').pop() || 'attachment';
-            const attachment: WebviewAttachment = {
-                name: fileName,
-                mimeType: this.getMimeTypeByFileName(fileName),
-                size: stat.size,
-                contentBase64: Buffer.from(fileBytes).toString('base64')
-            };
 
             const panel = await this.openChatPanel();
             await this.waitForWebviewReady();
-            panel.webview.postMessage({ type: 'attachments-added', attachments: [attachment] });
-            vscode.window.showInformationMessage(`채팅 첨부에 추가됨: ${fileName}`);
+            panel.webview.postMessage({ type: 'attachments-added', attachments });
+
+            if (attachments.length === 1) {
+                vscode.window.showInformationMessage(`채팅 첨부에 추가됨: ${attachments[0].name}`);
+            } else {
+                vscode.window.showInformationMessage(`채팅 첨부에 추가됨: ${attachments.length}개 파일`);
+            }
+
+            if (skippedFolders > 0 || skippedTooLarge > 0) {
+                const reasons = [
+                    skippedFolders > 0 ? `폴더 ${skippedFolders}개 제외` : null,
+                    skippedTooLarge > 0 ? `2MB 초과 파일 ${skippedTooLarge}개 제외` : null
+                ].filter((value): value is string => value !== null);
+                vscode.window.showWarningMessage(reasons.join(', '));
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             const panel = await this.openChatPanel();
