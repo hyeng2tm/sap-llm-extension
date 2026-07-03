@@ -23,6 +23,32 @@ type ContentSegment =
   | { type: "code"; value: string; language: string };
 
 type ExportFormat = "md" | "txt";
+const MAX_HISTORY_MESSAGES = 200;
+
+function sanitizeHistoryMessages(messages: unknown): Message[] {
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+
+  return messages
+    .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
+    .map((entry, index) => {
+      const role = entry.role === "user" || entry.role === "assistant" || entry.role === "system"
+        ? entry.role
+        : "system";
+      const kind = entry.kind === "error" || entry.kind === "canceled"
+        ? entry.kind
+        : undefined;
+      return {
+        id: typeof entry.id === "string" && entry.id.trim() ? entry.id : `history-${Date.now()}-${index}`,
+        role,
+        content: typeof entry.content === "string" ? entry.content : "",
+        kind,
+        statusText: typeof entry.statusText === "string" ? entry.statusText : undefined
+      };
+    })
+    .slice(-MAX_HISTORY_MESSAGES);
+}
 
 function splitContentSegments(content: string): ContentSegment[] {
   const segments: ContentSegment[] = [];
@@ -131,6 +157,8 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const historyReadyRef = useRef(false);
+  const historySyncTimerRef = useRef<number | null>(null);
 
   const textAreaDisabledProps = isSending ? { disabled: true } : {};
 
@@ -220,6 +248,10 @@ export default function App() {
 
   const handleExportAssistantMessage = (msg: Message, format: ExportFormat) => {
     exportChat([msg], `sap-llm-response-${new Date().toISOString().replace(/[:.]/g, "-")}`, format);
+  };
+
+  const handleLoadHistory = () => {
+    vscode?.postMessage({ type: "load-history-request" });
   };
 
   const handleCopyCode = async (value: string) => {
@@ -314,11 +346,6 @@ export default function App() {
   }, [messages]);
 
   useEffect(() => {
-    vscode?.postMessage({ type: "webview-ready" });
-    window.dispatchEvent(new Event("sap-llm-ready"));
-  }, []);
-
-  useEffect(() => {
     if (!isSending) {
       setIsTakingLong(false);
       return;
@@ -345,6 +372,45 @@ export default function App() {
               ? prev
               : [...prev, { id: message.id, role: "assistant", content: "" }]
           );
+          break;
+
+        case "init-history":
+          setMessages(sanitizeHistoryMessages(message.messages));
+          setIsSending(false);
+          setIsTakingLong(false);
+          setActiveAssistantId(null);
+          historyReadyRef.current = true;
+          break;
+
+        case "history-loaded": {
+          const loadedMessages = sanitizeHistoryMessages(message.messages);
+          setMessages([
+            ...loadedMessages,
+            {
+              id: `history-loaded-${Date.now()}`,
+              role: "system",
+              content: message.sourceName
+                ? `히스토리를 불러왔습니다: ${message.sourceName}`
+                : "히스토리를 불러왔습니다."
+            }
+          ]);
+          setIsSending(false);
+          setIsTakingLong(false);
+          setActiveAssistantId(null);
+          historyReadyRef.current = true;
+          break;
+        }
+
+        case "history-load-error":
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `history-load-error-${Date.now()}`,
+              role: "system",
+              content: message.message || "히스토리 불러오기에 실패했습니다.",
+              kind: "error"
+            }
+          ]);
           break;
 
         case "stream-chunk":
@@ -427,6 +493,42 @@ export default function App() {
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      vscode?.postMessage({ type: "webview-ready" });
+      window.dispatchEvent(new Event("sap-llm-ready"));
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!historyReadyRef.current) {
+      return;
+    }
+
+    if (historySyncTimerRef.current !== null) {
+      window.clearTimeout(historySyncTimerRef.current);
+    }
+
+    historySyncTimerRef.current = window.setTimeout(() => {
+      const compactMessages = messages.map((msg) => ({
+        id: msg.id,
+        role: msg.role,
+        content: msg.content,
+        kind: msg.kind,
+        statusText: msg.statusText
+      })).slice(-MAX_HISTORY_MESSAGES);
+      vscode?.postMessage({ type: "history-updated", messages: compactMessages });
+    }, 250);
+
+    return () => {
+      if (historySyncTimerRef.current !== null) {
+        window.clearTimeout(historySyncTimerRef.current);
+      }
+    };
+  }, [messages]);
 
   const handleSend = () => {
     if (isSending) {
@@ -610,6 +712,22 @@ export default function App() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <vscode-button
+            appearance="icon"
+            title="히스토리 불러오기"
+            aria-label="히스토리 불러오기"
+            onClick={handleLoadHistory}
+            style={{ height: "24px", minWidth: "24px", width: "24px" }}
+            {...textAreaDisabledProps}
+          >
+            <span aria-hidden="true" style={{ display: "inline-flex", width: "14px", height: "14px" }}>
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 2.2A5.8 5.8 0 1 1 2.2 8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                <path d="M2.2 3.4V8H6.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M8 5.2V8L10.2 9.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </span>
+          </vscode-button>
           <vscode-button
             appearance="icon"
             title="전체 Markdown 다운로드"

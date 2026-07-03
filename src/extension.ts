@@ -23,6 +23,27 @@ type SelectionAnalysisContext = {
     sourceLabel: string;
 };
 
+type PersistedChatMessage = {
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    kind?: 'error' | 'canceled';
+    statusText?: string;
+};
+
+type HistorySnapshotEntry = {
+    uri: vscode.Uri;
+    name: string;
+    mtime: number;
+    snapshotAtMs?: number;
+};
+
+type HistorySnapshotSummary = {
+    messageCount: number;
+    snapshotAt?: string;
+    lastMessagePreview?: string;
+};
+
 export function activate(context: vscode.ExtensionContext) {
     const provider = new CompanyAgentProvider(context.extensionUri);
     const codeLensProvider = new AnalyzeSelectionCodeLensProvider();
@@ -179,10 +200,30 @@ class AnalyzeSelectionCodeLensProvider implements vscode.CodeLensProvider {
 class CompanyAgentProvider {
     private static readonly MAX_CONTEXT_BYTES = 48 * 1024;
     private static readonly MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+    private static readonly MAX_CHAT_HISTORY_MESSAGES = 200;
+    private static readonly HISTORY_DIR = '.sap-llm/history';
+    private static readonly MAX_HISTORY_SNAPSHOTS = 100;
+    private static readonly DEFAULT_HISTORY_RETENTION_DAYS = 14;
+    private static readonly TEXT_UPLOAD_EXTENSIONS = new Set([
+        'abap',
+        'txt',
+        'md',
+        'js',
+        'ts',
+        'tsx',
+        'jsx',
+        'json',
+        'xml',
+        'sql',
+        'yaml',
+        'yml',
+        'csv'
+    ]);
 
     private _authToken: string | null = null;
     private conversationId: string | null = null;
     private currentFileId: string | null = null;
+    private historySessionId: string | null = null;
     private activeRequestAbortController: AbortController | null = null;
     private activeResponseId: string | null = null;
     private webviewPanel: vscode.WebviewPanel | null = null;
@@ -190,10 +231,390 @@ class CompanyAgentProvider {
     private webviewReadyResolver: (() => void) | null = null;
     private webviewReadyPromise: Promise<void> | null = null;
     
-    constructor(private readonly _extensionUri: vscode.Uri) {}
+    constructor(
+        private readonly _extensionUri: vscode.Uri
+    ) {}
+
+    private sanitizeChatHistoryMessages(messages: unknown): PersistedChatMessage[] {
+        if (!Array.isArray(messages)) {
+            return [];
+        }
+
+        return messages
+            .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+            .map((entry) => {
+                const role: PersistedChatMessage['role'] = entry.role === 'user' || entry.role === 'assistant' || entry.role === 'system'
+                    ? entry.role
+                    : 'system';
+                const kind: PersistedChatMessage['kind'] = entry.kind === 'error' || entry.kind === 'canceled'
+                    ? entry.kind
+                    : undefined;
+                return {
+                    id: typeof entry.id === 'string' && entry.id.trim()
+                        ? entry.id
+                        : `history-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    role,
+                    content: typeof entry.content === 'string' ? entry.content : '',
+                    kind,
+                    statusText: typeof entry.statusText === 'string' ? entry.statusText : undefined
+                };
+            })
+            .slice(-CompanyAgentProvider.MAX_CHAT_HISTORY_MESSAGES);
+    }
+
+    private getHistoryDirectoryUri(): vscode.Uri | null {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+        if (!workspaceRoot) {
+            return null;
+        }
+
+        return vscode.Uri.joinPath(workspaceRoot, CompanyAgentProvider.HISTORY_DIR);
+    }
+
+    private ensureHistorySessionId(): string {
+        if (!this.historySessionId) {
+            this.historySessionId = `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        }
+
+        return this.historySessionId;
+    }
+
+    private async createSnapshotHistoryFileUri(historyDir: vscode.Uri): Promise<vscode.Uri> {
+        return vscode.Uri.joinPath(historyDir, `chat-${this.ensureHistorySessionId()}.json`);
+    }
+
+    private async deleteHistorySnapshotGroup(historyDir: vscode.Uri, fileName: string): Promise<void> {
+        try {
+            const groupKey = this.getSnapshotHistoryGroupKey(fileName);
+            const entries = await vscode.workspace.fs.readDirectory(historyDir);
+            const duplicates = entries
+                .filter(([name, type]) => type === vscode.FileType.File && this.getSnapshotHistoryGroupKey(name) === groupKey)
+                .map(([name]) => vscode.Uri.joinPath(historyDir, name));
+
+            await Promise.all(duplicates.map((uri) => vscode.workspace.fs.delete(uri)));
+        } catch {
+            // Best effort cleanup only.
+        }
+    }
+
+    private async getLatestHistoryFileUri(): Promise<vscode.Uri | null> {
+        const historyDir = this.getHistoryDirectoryUri();
+        if (!historyDir) {
+            return null;
+        }
+
+        try {
+            const snapshots = await this.getHistorySnapshotEntries(historyDir);
+            if (snapshots.length === 0) {
+                return null;
+            }
+
+            return snapshots[0].uri;
+        } catch {
+            return null;
+        }
+    }
+
+    private async getHistorySnapshotEntries(historyDir: vscode.Uri): Promise<HistorySnapshotEntry[]> {
+        const entries = await vscode.workspace.fs.readDirectory(historyDir);
+        const candidates = entries
+            .filter(([name, type]) => type === vscode.FileType.File && /^chat-(?:session-[a-z0-9-]+|\d{4}-\d{2}-\d{2}(?:-\d{2}-\d{2}(?:-\d+)?)?)\.json$/i.test(name));
+
+        const withMtime = await Promise.all(candidates.map(async ([name]) => {
+            const uri = vscode.Uri.joinPath(historyDir, name);
+            const stat = await vscode.workspace.fs.stat(uri);
+            return {
+                uri,
+                name,
+                mtime: stat.mtime,
+                snapshotAtMs: await this.readSnapshotAtMs(uri)
+            };
+        }));
+
+        withMtime.sort((a, b) => {
+            const aTime = a.snapshotAtMs ?? a.mtime;
+            const bTime = b.snapshotAtMs ?? b.mtime;
+            return bTime - aTime;
+        });
+        return withMtime;
+    }
+
+    private getSnapshotHistoryGroupKey(fileName: string): string {
+        const sessionMatch = fileName.match(/^(chat-session-[a-z0-9-]+\.json)$/i);
+        if (sessionMatch) {
+            return sessionMatch[1].toLowerCase();
+        }
+
+        const match = fileName.match(/^(chat-\d{4}-\d{2}-\d{2}-\d{2}-\d{2})(?:-\d+)?\.json$/);
+        if (!match) {
+            return fileName;
+        }
+
+        return `${match[1]}.json`;
+    }
+
+    private getLatestHistorySnapshotsByGroup(entries: HistorySnapshotEntry[]): HistorySnapshotEntry[] {
+        const latestByGroup = new Map<string, HistorySnapshotEntry>();
+
+        for (const entry of entries) {
+            const groupKey = this.getSnapshotHistoryGroupKey(entry.name);
+            if (!latestByGroup.has(groupKey)) {
+                latestByGroup.set(groupKey, entry);
+            }
+        }
+
+        return Array.from(latestByGroup.values());
+    }
+
+    private async readSnapshotAtMs(historyFile: vscode.Uri): Promise<number | undefined> {
+        try {
+            const raw = await vscode.workspace.fs.readFile(historyFile);
+            const parsed = JSON.parse(Buffer.from(raw).toString('utf8')) as unknown;
+            if (typeof parsed !== 'object' || parsed === null) {
+                return undefined;
+            }
+
+            const asRecord = parsed as Record<string, unknown>;
+            const snapshotAt = typeof asRecord.snapshotAt === 'string'
+                ? asRecord.snapshotAt
+                : (typeof asRecord.updatedAt === 'string' ? asRecord.updatedAt : undefined);
+            if (!snapshotAt) {
+                return undefined;
+            }
+
+            const ts = Date.parse(snapshotAt);
+            return Number.isNaN(ts) ? undefined : ts;
+        } catch {
+            return undefined;
+        }
+    }
+
+    private async loadChatHistoryFromFile(historyFile: vscode.Uri): Promise<PersistedChatMessage[]> {
+        try {
+            const raw = await vscode.workspace.fs.readFile(historyFile);
+            const parsed = JSON.parse(Buffer.from(raw).toString('utf8')) as unknown;
+            if (Array.isArray(parsed)) {
+                return this.sanitizeChatHistoryMessages(parsed);
+            }
+
+            if (typeof parsed === 'object' && parsed !== null) {
+                const asRecord = parsed as Record<string, unknown>;
+                return this.sanitizeChatHistoryMessages(asRecord.messages);
+            }
+        } catch {
+            return [];
+        }
+
+        return [];
+    }
+
+    private getLastMessagePreview(messages: PersistedChatMessage[]): string | undefined {
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const content = messages[index]?.content?.replace(/\s+/g, ' ').trim();
+            if (!content) {
+                continue;
+            }
+
+            return content.length > 80 ? `${content.slice(0, 77)}...` : content;
+        }
+
+        return undefined;
+    }
+
+    private async readHistorySnapshotSummary(historyFile: vscode.Uri): Promise<HistorySnapshotSummary> {
+        try {
+            const raw = await vscode.workspace.fs.readFile(historyFile);
+            const parsed = JSON.parse(Buffer.from(raw).toString('utf8')) as unknown;
+
+            if (Array.isArray(parsed)) {
+                const messages = this.sanitizeChatHistoryMessages(parsed);
+                return {
+                    messageCount: messages.length,
+                    lastMessagePreview: this.getLastMessagePreview(messages)
+                };
+            }
+
+            if (typeof parsed === 'object' && parsed !== null) {
+                const asRecord = parsed as Record<string, unknown>;
+                const messages = this.sanitizeChatHistoryMessages(asRecord.messages);
+                const messageCount = typeof asRecord.messageCount === 'number'
+                    ? Math.max(0, Math.floor(asRecord.messageCount))
+                    : messages.length;
+                const snapshotAt = typeof asRecord.snapshotAt === 'string'
+                    ? asRecord.snapshotAt
+                    : (typeof asRecord.updatedAt === 'string' ? asRecord.updatedAt : undefined);
+                return {
+                    messageCount,
+                    snapshotAt,
+                    lastMessagePreview: this.getLastMessagePreview(messages)
+                };
+            }
+        } catch {
+            // ignore malformed snapshot and fall back to defaults
+        }
+
+        return { messageCount: 0 };
+    }
+
+    private async showHistorySnapshotPickerAndLoad(webview: vscode.Webview): Promise<void> {
+        const historyDir = this.getHistoryDirectoryUri();
+        if (!historyDir) {
+            webview.postMessage({ type: 'history-load-error', message: '워크스페이스가 열려 있지 않아 히스토리를 불러올 수 없습니다.' });
+            return;
+        }
+
+        let snapshots: HistorySnapshotEntry[] = [];
+        try {
+            snapshots = await this.getHistorySnapshotEntries(historyDir);
+        } catch {
+            snapshots = [];
+        }
+
+        if (snapshots.length === 0) {
+            webview.postMessage({ type: 'history-load-error', message: '불러올 히스토리 스냅샷이 없습니다.' });
+            return;
+        }
+
+        const latestSnapshots = this.getLatestHistorySnapshotsByGroup(snapshots);
+
+        const quickPickItems = await Promise.all(latestSnapshots.map(async (entry) => {
+            const summary = await this.readHistorySnapshotSummary(entry.uri);
+            const displayTime = summary.snapshotAt
+                ? new Date(summary.snapshotAt).toLocaleString()
+                : new Date(entry.snapshotAtMs ?? entry.mtime).toLocaleString();
+
+            return {
+                label: `${displayTime}`,
+                description: `메시지 ${summary.messageCount}개`,
+                detail: summary.lastMessagePreview
+                    ? `${summary.lastMessagePreview} · ${entry.name}`
+                    : entry.name,
+                entry
+            };
+        }));
+
+        const picked = await vscode.window.showQuickPick(quickPickItems, {
+            title: '불러올 채팅 히스토리 선택',
+            placeHolder: '스냅샷 파일을 선택하세요'
+        });
+
+        if (!picked) {
+            return;
+        }
+
+        const messages = await this.loadChatHistoryFromFile(picked.entry.uri);
+        webview.postMessage({
+            type: 'history-loaded',
+            messages,
+            sourceName: picked.entry.name
+        });
+    }
+
+    private async pruneOldHistorySnapshots(historyDir: vscode.Uri): Promise<void> {
+        try {
+            const entries = await vscode.workspace.fs.readDirectory(historyDir);
+            const snapshotUris = entries
+                .filter(([name, type]) => type === vscode.FileType.File && /^chat-(?:session-[a-z0-9-]+|\d{4}-\d{2}-\d{2}(?:-\d{2}-\d{2}(?:-\d+)?)?)\.json$/i.test(name))
+                .map(([name]) => vscode.Uri.joinPath(historyDir, name));
+
+            if (snapshotUris.length === 0) {
+                return;
+            }
+
+            const { maxHistorySnapshots, historyRetentionDays } = this.getAgentConfig();
+            const safeMaxSnapshots = Math.max(1, Math.floor(maxHistorySnapshots || CompanyAgentProvider.MAX_HISTORY_SNAPSHOTS));
+            const safeRetentionDays = Math.max(0, Math.floor(historyRetentionDays));
+
+            const withMtime = await Promise.all(snapshotUris.map(async (uri) => {
+                const stat = await vscode.workspace.fs.stat(uri);
+                return { uri, mtime: stat.mtime };
+            }));
+
+            if (safeRetentionDays > 0) {
+                const cutoff = Date.now() - (safeRetentionDays * 24 * 60 * 60 * 1000);
+                const expired = withMtime.filter((entry) => entry.mtime < cutoff);
+                await Promise.all(expired.map(({ uri }) => vscode.workspace.fs.delete(uri)));
+            }
+
+            const entriesAfterRetention = await Promise.all(snapshotUris.map(async (uri) => {
+                try {
+                    const stat = await vscode.workspace.fs.stat(uri);
+                    return { uri, mtime: stat.mtime };
+                } catch {
+                    return null;
+                }
+            }));
+
+            const existingEntries = entriesAfterRetention
+                .filter((entry): entry is { uri: vscode.Uri; mtime: number } => entry !== null);
+
+            if (existingEntries.length <= safeMaxSnapshots) {
+                return;
+            }
+
+            existingEntries.sort((a, b) => b.mtime - a.mtime);
+            const stale = existingEntries.slice(safeMaxSnapshots);
+
+            await Promise.all(stale.map(({ uri }) => vscode.workspace.fs.delete(uri)));
+        } catch {
+            // Best effort cleanup only.
+        }
+    }
+
+    private async loadChatHistoryFromWorkspace(): Promise<PersistedChatMessage[]> {
+        const latestFile = await this.getLatestHistoryFileUri();
+        if (!latestFile) {
+            return [];
+        }
+
+        try {
+            const raw = await vscode.workspace.fs.readFile(latestFile);
+            const parsed = JSON.parse(Buffer.from(raw).toString('utf8')) as unknown;
+            if (Array.isArray(parsed)) {
+                return this.sanitizeChatHistoryMessages(parsed);
+            }
+
+            if (typeof parsed === 'object' && parsed !== null) {
+                const asRecord = parsed as Record<string, unknown>;
+                return this.sanitizeChatHistoryMessages(asRecord.messages);
+            }
+        } catch {
+            return [];
+        }
+
+        return [];
+    }
+
+    private async saveChatHistoryToWorkspace(messages: unknown): Promise<void> {
+        const sanitized = this.sanitizeChatHistoryMessages(messages);
+        const historyDir = this.getHistoryDirectoryUri();
+        if (!historyDir) {
+            return;
+        }
+
+        const targetFile = await this.createSnapshotHistoryFileUri(historyDir);
+        const targetFileName = targetFile.path.split('/').pop() || `chat-${this.ensureHistorySessionId()}.json`;
+        const payload = {
+            date: new Date().toISOString().slice(0, 10),
+            snapshotAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            historySessionId: this.ensureHistorySessionId(),
+            messageCount: sanitized.length,
+            messages: sanitized
+        };
+
+        await vscode.workspace.fs.createDirectory(historyDir);
+        await this.deleteHistorySnapshotGroup(historyDir, targetFileName);
+        await vscode.workspace.fs.writeFile(
+            targetFile,
+            new TextEncoder().encode(JSON.stringify(payload, null, 2))
+        );
+        await this.pruneOldHistorySnapshots(historyDir);
+    }
 
     public restoreWebviewPanel(panel: vscode.WebviewPanel): void {
         this.webviewPanel = panel;
+        this.ensureHistorySessionId();
         this.webviewReady = false;
         this.webviewReadyPromise = new Promise<void>((resolve) => {
             this.webviewReadyResolver = resolve;
@@ -208,6 +629,7 @@ class CompanyAgentProvider {
             if (this.webviewPanel === panel) {
                 this.webviewPanel = null;
             }
+            this.historySessionId = null;
         });
     }
 
@@ -385,7 +807,9 @@ class CompanyAgentProvider {
             agentId: config.get<string>('agentId') || '',
             agentCode: config.get<string>('agentCode') || '',
             agentUserId: config.get<string>('userId') || '',
-            longResponseThresholdMs: Math.max(1000, config.get<number>('longResponseThresholdMs') || 10000)
+            longResponseThresholdMs: Math.max(1000, config.get<number>('longResponseThresholdMs') || 10000),
+            historyRetentionDays: Math.max(0, config.get<number>('historyRetentionDays') ?? CompanyAgentProvider.DEFAULT_HISTORY_RETENTION_DAYS),
+            maxHistorySnapshots: Math.max(1, config.get<number>('maxHistorySnapshots') ?? CompanyAgentProvider.MAX_HISTORY_SNAPSHOTS)
         };
     }
 
@@ -494,6 +918,30 @@ class CompanyAgentProvider {
         }
     }
 
+    private getUploadFileName(fileName: string, mimeType?: string): string {
+        const normalized = fileName.trim() || 'attachment';
+        const lastDotIndex = normalized.lastIndexOf('.');
+        const ext = lastDotIndex >= 0 ? normalized.slice(lastDotIndex + 1).toLowerCase() : '';
+        const baseName = lastDotIndex > 0 ? normalized.slice(0, lastDotIndex) : normalized;
+        const isTextLikeMime = typeof mimeType === 'string' && mimeType.startsWith('text/');
+        const shouldForceTxt = CompanyAgentProvider.TEXT_UPLOAD_EXTENSIONS.has(ext) || isTextLikeMime;
+
+        if (!shouldForceTxt) {
+            return normalized;
+        }
+
+        return `${baseName || 'attachment'}.txt`;
+    }
+
+    private getUploadMimeType(fileName: string, mimeType?: string): string {
+        const normalizedName = this.getUploadFileName(fileName, mimeType);
+        if (normalizedName.toLowerCase().endsWith('.txt')) {
+            return 'text/plain';
+        }
+
+        return mimeType || this.getMimeTypeByFileName(fileName);
+    }
+
     public async attachExplorerFile(uri: vscode.Uri): Promise<void> {
         if (!uri) {
             vscode.window.showWarningMessage('첨부할 파일을 선택해주세요.');
@@ -547,11 +995,14 @@ class CompanyAgentProvider {
                 throw new Error(`첨부 파일 크기 초과: ${attachment.name}`);
             }
 
+            const uploadFileName = this.getUploadFileName(attachment.name, attachment.mimeType);
+            const uploadMimeType = this.getUploadMimeType(attachment.name, attachment.mimeType);
+
             const materialId = await this.uploadMaterialFile(
                 token,
-                attachment.name,
+                uploadFileName,
                 bytes,
-                attachment.mimeType || 'application/octet-stream'
+                uploadMimeType
             );
             materialIds.push(materialId);
         }
@@ -719,6 +1170,17 @@ class CompanyAgentProvider {
                 if (this.webviewPanel) {
                     this.webviewPanel.title = 'SAP LLM Chat';
                 }
+                webview.postMessage({ type: 'init-history', messages: await this.loadChatHistoryFromWorkspace() });
+                return;
+            }
+
+            if (data.type === 'history-updated') {
+                await this.saveChatHistoryToWorkspace(data.messages);
+                return;
+            }
+
+            if (data.type === 'load-history-request') {
+                await this.showHistorySnapshotPickerAndLoad(webview);
                 return;
             }
 
@@ -787,6 +1249,7 @@ class CompanyAgentProvider {
 
     public async openChatPanel(): Promise<vscode.WebviewPanel> {
         if (this.webviewPanel) {
+            this.ensureHistorySessionId();
             this.webviewPanel.reveal(undefined, false);
             return this.webviewPanel;
         }
@@ -803,6 +1266,7 @@ class CompanyAgentProvider {
         );
 
         this.webviewPanel = panel;
+        this.ensureHistorySessionId();
         this.webviewReady = false;
         this.webviewReadyPromise = new Promise<void>((resolve) => {
             this.webviewReadyResolver = resolve;
@@ -815,6 +1279,7 @@ class CompanyAgentProvider {
             if (this.webviewPanel === panel) {
                 this.webviewPanel = null;
             }
+            this.historySessionId = null;
         });
 
         return panel;

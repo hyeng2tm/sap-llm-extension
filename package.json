@@ -10,15 +10,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:sap-llm.analyzeCode",
-    "onCommand:sap-llm.findBugs",
-    "onCommand:sap-llm.suggestRefactor",
-    "onCommand:sap-llm.reviewPerformance",
-    "onCommand:sap-llm.reviewSecurity",
-    "onCommand:sap-llm.generateTests",
-    "onCommand:sap-llm.attachExplorerFile",
-    "onCommand:sap-llm.openChatPanel"
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -95,6 +87,18 @@
           "default": 10000,
           "minimum": 1000,
           "description": "Milliseconds before the chat UI marks a response as taking longer than usual"
+        },
+        "companyAi.historyRetentionDays": {
+          "type": "number",
+          "default": 14,
+          "minimum": 0,
+          "description": "Days to keep chat history snapshots in .sap-llm/history (0 disables age-based cleanup)"
+        },
+        "companyAi.maxHistorySnapshots": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "description": "Maximum number of chat history snapshot files to keep in .sap-llm/history"
         }
       }
     },
