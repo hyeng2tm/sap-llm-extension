@@ -4,6 +4,15 @@
   "description": "SAP LLM Analyzer with Keycloak + DevX Agent",
   "version": "0.0.1",
   "publisher": "shinsegae",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://github.com/hyeng2tm/sap-llm-extension#readme",
+  "bugs": {
+    "url": "https://github.com/hyeng2tm/sap-llm-extension/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hyeng2tm/sap-llm-extension.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -165,7 +174,10 @@
     }
   },
   "scripts": {
-    "compile": "npm run build:webview && tsc -p ./",
+    "vscode:prepublish": "npm run compile",
+    "compile": "npm run build:webview && npm run typecheck && npm run build:extension",
+    "typecheck": "tsc --noEmit -p ./",
+    "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node20 --format=cjs --outfile=out/extension.js --external:vscode",
     "watch": "tsc -watch -p ./",
     "build:webview": "cd webview-ui && npm run build"
   },
@@ -175,6 +187,7 @@
     "@types/vscode": "^1.85.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
+    "esbuild": "^0.28.1",
     "eslint": "^10.5.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1"

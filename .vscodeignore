@@ -1,6 +1,13 @@
 .vscode/**
 .vscode-test/**
+node_modules/**
 src/**
+webview-ui/node_modules/**
+webview-ui/src/**
+webview-ui/dist/**
+webview-ui/index.html
+webview-ui/vite.config.ts
+webview-ui/package-lock.json
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md
