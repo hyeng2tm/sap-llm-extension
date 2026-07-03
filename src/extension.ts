@@ -44,14 +44,16 @@ type HistorySnapshotSummary = {
     lastMessagePreview?: string;
 };
 
+const CHAT_VIEW_ID = 'sapLlmChatView';
+
 export function activate(context: vscode.ExtensionContext) {
     const provider = new CompanyAgentProvider(context.extensionUri);
     const codeLensProvider = new AnalyzeSelectionCodeLensProvider();
 
     context.subscriptions.push(
-        vscode.window.registerWebviewPanelSerializer('sapLlmChatPanel', {
-            async deserializeWebviewPanel(panel: vscode.WebviewPanel) {
-                provider.restoreWebviewPanel(panel);
+        vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, provider, {
+            webviewOptions: {
+                retainContextWhenHidden: true
             }
         })
     );
@@ -139,9 +141,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.onDidChangeActiveTextEditor(() => codeLensProvider.refresh())
     );
 
-    setTimeout(() => {
-        void provider.openChatPanelIfMissing();
-    }, 1500);
 }
 
 class AnalyzeSelectionCodeLensProvider implements vscode.CodeLensProvider {
@@ -200,7 +199,7 @@ class AnalyzeSelectionCodeLensProvider implements vscode.CodeLensProvider {
     }
 }
 
-class CompanyAgentProvider {
+class CompanyAgentProvider implements vscode.WebviewViewProvider {
     private static readonly MAX_CONTEXT_BYTES = 48 * 1024;
     private static readonly MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
     private static readonly MAX_CHAT_HISTORY_MESSAGES = 200;
@@ -229,7 +228,7 @@ class CompanyAgentProvider {
     private historySessionId: string | null = null;
     private activeRequestAbortController: AbortController | null = null;
     private activeResponseId: string | null = null;
-    private webviewPanel: vscode.WebviewPanel | null = null;
+    private webviewView: vscode.WebviewView | null = null;
     private webviewReady: boolean = false;
     private webviewReadyResolver: (() => void) | null = null;
     private webviewReadyPromise: Promise<void> | null = null;
@@ -237,6 +236,30 @@ class CompanyAgentProvider {
     constructor(
         private readonly _extensionUri: vscode.Uri
     ) {}
+
+    public resolveWebviewView(webviewView: vscode.WebviewView): void {
+        this.webviewView = webviewView;
+        this.ensureHistorySessionId();
+        this.webviewReady = false;
+        this.webviewReadyPromise = new Promise<void>((resolve) => {
+            this.webviewReadyResolver = resolve;
+        });
+
+        this.configureWebview(webviewView.webview);
+        webviewView.title = 'SAP LLM Chat';
+
+        const messageDisposable = this.registerWebviewMessageHandler(webviewView.webview);
+        webviewView.onDidDispose(() => {
+            messageDisposable.dispose();
+            if (this.webviewView === webviewView) {
+                this.webviewView = null;
+            }
+            this.historySessionId = null;
+            this.webviewReady = false;
+            this.webviewReadyResolver = null;
+            this.webviewReadyPromise = null;
+        });
+    }
 
     private sanitizeChatHistoryMessages(messages: unknown): PersistedChatMessage[] {
         if (!Array.isArray(messages)) {
@@ -615,27 +638,6 @@ class CompanyAgentProvider {
         await this.pruneOldHistorySnapshots(historyDir);
     }
 
-    public restoreWebviewPanel(panel: vscode.WebviewPanel): void {
-        this.webviewPanel = panel;
-        this.ensureHistorySessionId();
-        this.webviewReady = false;
-        this.webviewReadyPromise = new Promise<void>((resolve) => {
-            this.webviewReadyResolver = resolve;
-        });
-
-        this.configureWebview(panel.webview);
-        panel.title = 'SAP LLM Chat - 준비 중';
-
-        const messageDisposable = this.registerWebviewMessageHandler(panel.webview);
-        panel.onDidDispose(() => {
-            messageDisposable.dispose();
-            if (this.webviewPanel === panel) {
-                this.webviewPanel = null;
-            }
-            this.historySessionId = null;
-        });
-    }
-
     private extractBlockingAnswer(payload: any): string {
         return payload?.answer
             || payload?.data?.answer
@@ -993,9 +995,9 @@ class CompanyAgentProvider {
                 return;
             }
 
-            const panel = await this.openChatPanel();
+            const webview = await this.openChatPanel();
             await this.waitForWebviewReady();
-            panel.webview.postMessage({ type: 'attachments-added', attachments });
+            webview.postMessage({ type: 'attachments-added', attachments });
 
             if (attachments.length === 1) {
                 vscode.window.showInformationMessage(`채팅 첨부에 추가됨: ${attachments[0].name}`);
@@ -1012,9 +1014,9 @@ class CompanyAgentProvider {
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            const panel = await this.openChatPanel();
+            const webview = await this.openChatPanel();
             await this.waitForWebviewReady();
-            panel.webview.postMessage({ type: 'attachment-error', message: `첨부 실패: ${message}` });
+            webview.postMessage({ type: 'attachment-error', message: `첨부 실패: ${message}` });
             vscode.window.showErrorMessage(`첨부 실패: ${message}`);
         }
     }
@@ -1204,8 +1206,8 @@ class CompanyAgentProvider {
                 this.webviewReadyResolver?.();
                 this.webviewReadyResolver = null;
                 this.webviewReadyPromise = null;
-                if (this.webviewPanel) {
-                    this.webviewPanel.title = 'SAP LLM Chat';
+                if (this.webviewView) {
+                    this.webviewView.title = 'SAP LLM Chat';
                 }
                 webview.postMessage({ type: 'init-history', messages: await this.loadChatHistoryFromWorkspace() });
                 return;
@@ -1284,59 +1286,28 @@ class CompanyAgentProvider {
         });
     }
 
-    public async openChatPanel(): Promise<vscode.WebviewPanel> {
-        if (this.webviewPanel) {
+    public async openChatPanel(): Promise<vscode.Webview> {
+        if (this.webviewView) {
             this.ensureHistorySessionId();
-            this.webviewPanel.reveal(undefined, false);
-            return this.webviewPanel;
+            this.webviewView.show(false);
+            return (this.webviewView as vscode.WebviewView).webview;
         }
 
-        const panel = vscode.window.createWebviewPanel(
-            'sapLlmChatPanel',
-            'SAP LLM Chat - 준비 중',
-            vscode.ViewColumn.Beside,
-            {
-                enableScripts: true,
-                retainContextWhenHidden: true,
-                localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, 'out', 'webview')]
-            }
-        );
+        await vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`);
 
-        this.webviewPanel = panel;
-        this.ensureHistorySessionId();
-        this.webviewReady = false;
-        this.webviewReadyPromise = new Promise<void>((resolve) => {
-            this.webviewReadyResolver = resolve;
-        });
-        this.configureWebview(panel.webview);
+        if (!this.webviewView) {
+            throw new Error('SAP LLM 채팅 뷰를 열 수 없습니다. 뷰 컨테이너가 초기화되지 않았습니다.');
+        }
 
-        const messageDisposable = this.registerWebviewMessageHandler(panel.webview);
-        panel.onDidDispose(() => {
-            messageDisposable.dispose();
-            if (this.webviewPanel === panel) {
-                this.webviewPanel = null;
-            }
-            this.historySessionId = null;
-        });
-
-        return panel;
+        return (this.webviewView as vscode.WebviewView).webview;
     }
 
     public async openChatPanelIfMissing(): Promise<void> {
-        if (this.webviewPanel || this.hasChatPanelTabInWorkbench()) {
+        if (this.webviewView) {
             return;
         }
 
         await this.openChatPanel();
-    }
-
-    private hasChatPanelTabInWorkbench(): boolean {
-        return vscode.window.tabGroups.all.some((group) =>
-            group.tabs.some((tab) =>
-                tab.input instanceof vscode.TabInputWebview
-                && tab.input.viewType === 'sapLlmChatPanel'
-            )
-        );
     }
 
     public async runSelectionAction(
@@ -1350,12 +1321,11 @@ class CompanyAgentProvider {
             return;
         }
 
-        const panel = await this.openChatPanel();
+        const webview = await this.openChatPanel();
         await this.waitForWebviewReady();
-        const targetWebview = panel.webview;
 
-        targetWebview.postMessage({ type: 'external-submit', text: userVisibleText });
-        await this.submitPrompt(prompt, targetWebview, [], context.text);
+        webview.postMessage({ type: 'external-submit', text: userVisibleText });
+        await this.submitPrompt(prompt, webview, [], context.text);
     }
 
     private async waitForWebviewReady(): Promise<void> {

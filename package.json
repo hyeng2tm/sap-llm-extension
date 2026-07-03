@@ -3,8 +3,9 @@
   "displayName": "SAP LLM Extension",
   "description": "SAP LLM Analyzer with Keycloak + DevX Agent",
   "version": "0.0.1",
+  "publisher": "shinsegae",
   "engines": {
-    "vscode": "^1.125.0"
+    "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
@@ -48,6 +49,25 @@
         "title": "SAP LLM: 채팅 패널 열기"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sapLlm",
+          "title": "SAP LLM",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sapLlm": [
+        {
+          "id": "sapLlmChatView",
+          "type": "webview",
+          "icon": "resources/icon.svg",
+          "name": "Chat"
+        }
+      ]
+    },
     "configuration": {
       "type": "object",
       "title": "Company AI",
@@ -152,7 +172,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "^24.13.2",
-    "@types/vscode": "^1.125.0",
+    "@types/vscode": "^1.85.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
     "eslint": "^10.5.0",
